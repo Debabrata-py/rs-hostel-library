@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  MEMBER
+  LIBRARIAN
+}
+
+enum UserStatus {
+  PENDING_EMAIL_VERIFICATION
+  PENDING_APPROVAL
+  ACTIVE
+  REJECTED
+  SUSPENDED
+}
+
+enum BookCategory {
+  FICTION
+  NON_FICTION
+  MAGAZINE
+}
+
+enum CopyCondition {
+  GOOD
+  WORN
+  DAMAGED
+  UNDER_REPAIR
+}
+
+enum CopyStatus {
+  AVAILABLE
+  UNAVAILABLE
+  RETIRED
+}
+
+enum BorrowRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  FULFILLED
+}
+
+enum EmailNotificationType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  BORROW_REQUEST
+  REQUEST_APPROVED
+  REQUEST_REJECTED
+  BOOK_ISSUED
+  BOOK_DUE_REMINDER
+  BOOK_OVERDUE
+  BOOK_RETURNED
+}
+
+enum EmailNotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  fullName     String
+  roomNumber   String
+  email        String     @unique
+  phone        String?
+  passwordHash String
+  role         UserRole   @default(MEMBER)
+  status       UserStatus @default(PENDING_EMAIL_VERIFICATION)
+
+  emailVerifiedAt DateTime?
+  activatedAt     DateTime?
+  activatedById   String?   @db.Uuid
+  rejectedAt      DateTime?
+  suspendedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activatedBy    User?  @relation("UserActivation", fields: [activatedById], references: [id], onDelete: SetNull)
+  activatedUsers User[] @relation("UserActivation")
+
+  verificationTokens  EmailVerificationToken[]
+  passwordResetTokens PasswordResetToken[]
+  sessions            Session[]
+
+  borrowRequests   BorrowRequest[] @relation("RequestMember")
+  reviewedRequests BorrowRequest[] @relation("RequestReviewer")
+
+  loans         Loan[] @relation("LoanMember")
+  issuedLoans   Loan[] @relation("LoanIssuer")
+  returnedLoans Loan[] @relation("LoanReturner")
+
+  reviews       Review[]
+  notifications EmailNotification[]
+
+  @@index([status])
+  @@index([role])
+  @@index([createdAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique
+  userId    String    @db.Uuid
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique
+  userId    String    @db.Uuid
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Book {
+  id              String       @id @default(uuid()) @db.Uuid
+  title           String
+  author          String
+  isbn            String?      @unique
+  publisher       String?
+  publicationYear Int?
+  description     String?
+  category        BookCategory
+  language        String?
+  edition         String?
+  tags            String[]     @default([])
+  coverImagePath  String?
+  isArchived      Boolean      @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  copies  BookCopy[]
+  reviews Review[]
+
+  @@index([title])
+  @@index([author])
+  @@index([category])
+}
+
+model BookCopy {
+  id              String        @id @default(uuid()) @db.Uuid
+  bookId          String        @db.Uuid
+  accessionNumber String        @unique
+  shelfLocation   String
+  condition       CopyCondition @default(GOOD)
+  status          CopyStatus    @default(AVAILABLE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  book           Book            @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  borrowRequests BorrowRequest[]
+  loans          Loan[]
+
+  @@index([bookId])
+  @@index([status])
+  @@index([shelfLocation])
+}
+
+model BorrowRequest {
+  id       String              @id @default(uuid()) @db.Uuid
+  memberId String              @db.Uuid
+  copyId   String              @db.Uuid
+  status   BorrowRequestStatus @default(PENDING)
+
+  requestedAt  DateTime  @default(now())
+  reviewedById String?   @db.Uuid
+  reviewedAt   DateTime?
+  decisionNote String?
+
+  member     User     @relation("RequestMember", fields: [memberId], references: [id], onDelete: Restrict)
+  copy       BookCopy @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  reviewedBy User?    @relation("RequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  loan Loan?
+
+  @@index([memberId, status])
+  @@index([copyId, status])
+  @@index([requestedAt])
+}
+
+model Loan {
+  id        String @id @default(uuid()) @db.Uuid
+  copyId    String @db.Uuid
+  memberId  String @db.Uuid
+  requestId String @unique @db.Uuid
+
+  issuedById   String    @db.Uuid
+  issuedAt     DateTime  @default(now())
+  dueAt        DateTime
+  returnedAt   DateTime?
+  returnedById String?   @db.Uuid
+
+  copy       BookCopy      @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  member     User          @relation("LoanMember", fields: [memberId], references: [id], onDelete: Restrict)
+  request    BorrowRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  issuedBy   User          @relation("LoanIssuer", fields: [issuedById], references: [id], onDelete: Restrict)
+  returnedBy User?         @relation("LoanReturner", fields: [returnedById], references: [id], onDelete: SetNull)
+
+  @@index([memberId, issuedAt])
+  @@index([copyId, returnedAt])
+  @@index([dueAt])
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  bookId    String   @db.Uuid
+  memberId  String   @db.Uuid
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  book   Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  member User @relation(fields: [memberId], references: [id], onDelete: Restrict)
+
+  @@unique([bookId, memberId])
+  @@index([memberId])
+}
+
+model EmailNotification {
+  id             String                  @id @default(uuid()) @db.Uuid
+  userId         String                  @db.Uuid
+  type           EmailNotificationType
+  recipientEmail String
+  subject        String
+  status         EmailNotificationStatus @default(QUEUED)
+
+  scheduledAt DateTime  @default(now())
+  sentAt      DateTime?
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@index([userId, createdAt])
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique
+  userId    String    @db.Uuid
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
