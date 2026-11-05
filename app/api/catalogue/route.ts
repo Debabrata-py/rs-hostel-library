@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [books, loanCounts] = await Promise.all([
+    const [books, loanCounts, reviewStats] = await Promise.all([
       prisma.book.findMany({
         where: {
           isArchived: false,
@@ -43,12 +43,32 @@ export async function GET() {
           _all: true,
         },
       }),
+
+      prisma.review.groupBy({
+        by: ["bookId"],
+        _avg: {
+          rating: true,
+        },
+        _count: {
+          _all: true,
+        },
+      }),
     ]);
 
     const loanCountByCopy = new Map(
       loanCounts.map((entry) => [
         entry.copyId,
         entry._count._all,
+      ])
+    );
+
+    const reviewStatsByBook = new Map(
+      reviewStats.map((entry) => [
+        entry.bookId,
+        {
+          averageRating: entry._avg.rating,
+          reviewCount: entry._count._all,
+        },
       ])
     );
 
@@ -79,6 +99,8 @@ export async function GET() {
         };
       });
 
+      const reviewStats = reviewStatsByBook.get(book.id);
+
       return {
         id: book.id,
         title: book.title,
@@ -95,6 +117,8 @@ export async function GET() {
         available_copies: availableCopies,
         borrowed_copies: borrowedCopies,
         total_reads: totalReads,
+        average_rating: reviewStats?.averageRating ?? null,
+        review_count: reviewStats?.reviewCount ?? 0,
         copies,
       };
     });

@@ -2,6 +2,7 @@
 "use client";
 
 import Link from "next/link";
+import BookReviews from "@/components/BookReviews";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -18,6 +19,8 @@ type Book = {
   available_copies: number;
   borrowed_copies: number;
   total_reads: number;
+  average_rating: number | null;
+  review_count: number;
   copies: {
     id: string;
     accession_number: string;
@@ -80,6 +83,10 @@ function getCoverUrl(path: string | null) {
 export default function Home() {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
+  const [selectedReviewBook, setSelectedReviewBook] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [searchField, setSearchField] = useState("keyword");
   const [searchSubmitted, setSearchSubmitted] = useState(false);
@@ -916,6 +923,37 @@ export default function Home() {
                           by {book.author}
                         </p>
 
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm text-amber-500">
+                              {book.average_rating !== null
+                                ? "★".repeat(Math.round(book.average_rating))
+                                : "☆☆☆☆☆"}
+                            </span>
+
+                            <span className="text-xs text-[#668b95]">
+                              {book.average_rating !== null
+                                ? book.average_rating.toFixed(1)
+                                : "Not rated"}
+                              {" "}({book.review_count}{" "}
+                              {book.review_count === 1 ? "review" : "reviews"})
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedReviewBook({
+                                id: book.id,
+                                title: book.title,
+                              })
+                            }
+                            className="text-xs font-semibold text-[#367f96] underline underline-offset-2 transition hover:text-[#2f7186]"
+                          >
+                            Read reviews
+                          </button>
+                        </div>
+
                         <p
                           className={`mt-3 flex items-center gap-2 text-xs font-medium ${status.color}`}
                         >
@@ -1007,6 +1045,23 @@ export default function Home() {
                     </article>
                   );
                 })}
+              </div>
+            )}
+
+            {selectedReviewBook && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={`Reviews for ${selectedReviewBook.title}`}
+                  className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-[#eaf5f8] p-2 shadow-2xl"
+                >
+                  <BookReviews
+                    bookId={selectedReviewBook.id}
+                    userRole={userRole}
+                    onClose={() => setSelectedReviewBook(null)}
+                  />
+                </div>
               </div>
             )}
 
