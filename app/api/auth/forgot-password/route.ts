@@ -5,6 +5,7 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { sendEmail } from "@/lib/email";
 
 const GENERIC_MESSAGE =
   "If an account exists with that email address, a password reset link has been generated.";
@@ -13,14 +14,6 @@ export async function POST(request: Request) {
   const csrfResponse = verifySameOrigin(request);
   if (csrfResponse) return csrfResponse;
 
-  if (process.env.NODE_ENV !== "development") {
-    return NextResponse.json(
-      {
-        message: "Password reset is temporarily unavailable.",
-      },
-      { status: 503 }
-    );
-  }
 
   try {
     const rateLimitResponse = await enforceRateLimit(request, {
@@ -85,7 +78,37 @@ export async function POST(request: Request) {
     const resetUrl = new URL("/reset-password", request.url);
     resetUrl.searchParams.set("token", token);
 
-    console.log(`[DEV EMAIL] Password reset link: ${resetUrl.toString()}`);
+    try {
+  await sendEmail({
+    to: email,
+    subject: "Reset your RS Hostel Library password",
+    text: `Hello,
+
+We received a request to reset your RS Hostel Library password.
+
+Use the following link to choose a new password:
+
+${resetUrl.toString()}
+
+This link expires in 1 hour. If you did not request this, you can ignore this email.
+
+RS Hostel Library`,
+  });
+} catch (emailError) {
+  console.error("Password reset email delivery failed:", emailError);
+
+  await prisma.passwordResetToken.deleteMany({
+    where: {
+      userId: user.id,
+      tokenHash,
+    },
+  });
+
+  return NextResponse.json(
+    { message: "Unable to send the password reset email. Please try again later." },
+    { status: 503 }
+  );
+}
 
     return NextResponse.json({ message: GENERIC_MESSAGE });
   } catch (error) {

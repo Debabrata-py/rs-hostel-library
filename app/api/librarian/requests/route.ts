@@ -1,8 +1,10 @@
+
 import { verifySameOrigin } from "@/lib/csrf";
 import { readJsonBody } from "@/lib/request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireLibrarian } from "@/lib/auth";
+import { sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +14,33 @@ const UUID_PATTERN =
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Email failures must never undo a completed library operation.
+async function notifyMember(
+  memberId: string,
+  subject: string,
+  text: string
+) {
+  try {
+    const member = await prisma.user.findUnique({
+      where: { id: memberId },
+      select: { email: true },
+    });
+
+    if (!member?.email) {
+      console.error("Member notification skipped: email address not found.");
+      return;
+    }
+
+    await sendEmail({
+      to: member.email,
+      subject,
+      text,
+    });
+  } catch (error) {
+    console.error("Member email notification failed:", error);
+  }
 }
 
 export async function GET() {
@@ -114,6 +143,7 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+
       if (body.decision !== "APPROVED" && body.decision !== "REJECTED") {
         return NextResponse.json(
           { error: "Invalid request decision." },
@@ -125,6 +155,7 @@ export async function POST(request: NextRequest) {
         typeof body.decisionNote === "string"
           ? body.decisionNote.trim()
           : "";
+
       if (note.length > 1000) {
         return NextResponse.json(
           { error: "The decision note cannot exceed 1000 characters." },
@@ -134,14 +165,23 @@ export async function POST(request: NextRequest) {
 
       const borrowingRequest = await prisma.borrowRequest.findUnique({
         where: { id: body.requestId },
-        select: { id: true, memberId: true },
+        select: {
+          id: true,
+          memberId: true,
+          member: { select: { fullName: true } },
+          copy: {
+            select: { book: { select: { title: true } } },
+          },
+        },
       });
+
       if (!borrowingRequest) {
         return NextResponse.json(
           { error: "This borrowing request does not exist." },
           { status: 404 }
         );
       }
+
       if (borrowingRequest.memberId === librarian.id) {
         return NextResponse.json(
           {
@@ -166,6 +206,7 @@ export async function POST(request: NextRequest) {
           decisionNote: note || null,
         },
       });
+
       if (result.count !== 1) {
         return NextResponse.json(
           {
@@ -173,6 +214,35 @@ export async function POST(request: NextRequest) {
               "This request could not be reviewed. It may already have been processed, or the member account is no longer active.",
           },
           { status: 409 }
+        );
+      }
+
+      const bookTitle = borrowingRequest.copy.book.title;
+
+      if (body.decision === "APPROVED") {
+        await notifyMember(
+          borrowingRequest.memberId,
+          "Your borrowing request has been approved",
+          `Hello ${borrowingRequest.member.fullName},
+
+Your request to borrow "${bookTitle}" has been approved.
+
+Please collect the book from the RS Hostel Library. The book has not been issued yet. The librarian will record the issue when you collect it.
+
+RS Hostel Library`
+        );
+      } else {
+        await notifyMember(
+          borrowingRequest.memberId,
+          "Your borrowing request has been rejected",
+          `Hello ${borrowingRequest.member.fullName},
+
+Unfortunately, your request to borrow "${bookTitle}" has been rejected.
+
+${note ? `Librarian's note: ${note}\n\n` : ""}
+For further information, please contact the RS Hostel Library.
+
+RS Hostel Library`
         );
       }
 
@@ -203,28 +273,37 @@ export async function POST(request: NextRequest) {
             status: true,
             memberId: true,
             copyId: true,
-            member: { select: { status: true } },
+            member: {
+              select: { status: true, fullName: true },
+            },
+            copy: {
+              select: { book: { select: { title: true } } },
+            },
           },
         });
 
         if (!borrowingRequest || borrowingRequest.status !== "APPROVED") {
           throw new Error("REQUEST_NOT_APPROVED");
         }
+
         if (borrowingRequest.memberId === librarian.id) {
           throw new Error("SELF_REQUEST_ACTION_NOT_ALLOWED");
         }
+
         if (borrowingRequest.member.status !== "ACTIVE") {
           throw new Error("MEMBER_NOT_ACTIVE");
         }
 
-        // This lock is also taken by the copy-edit endpoint. It serializes
-        // changes to condition/status with issuing this physical copy.
+        // Serialize changes to this physical copy with the issue operation.
         const lockedCopies = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "BookCopy"
           WHERE "id" = ${borrowingRequest.copyId}::uuid
           FOR UPDATE
         `;
-        if (lockedCopies.length === 0) throw new Error("COPY_NOT_AVAILABLE");
+
+        if (lockedCopies.length === 0) {
+          throw new Error("COPY_NOT_AVAILABLE");
+        }
 
         const copy = await tx.bookCopy.findUnique({
           where: { id: borrowingRequest.copyId },
@@ -262,11 +341,12 @@ export async function POST(request: NextRequest) {
           },
           data: { status: "FULFILLED" },
         });
+
         if (updated.count !== 1) {
           throw new Error("REQUEST_ALREADY_PROCESSED");
         }
 
-        return tx.loan.create({
+        const loan = await tx.loan.create({
           data: {
             copyId: borrowingRequest.copyId,
             memberId: borrowingRequest.memberId,
@@ -277,7 +357,39 @@ export async function POST(request: NextRequest) {
           },
           select: { id: true, dueAt: true },
         });
+
+        return {
+          ...loan,
+          issuedAt: now,
+          memberId: borrowingRequest.memberId,
+          memberName: borrowingRequest.member.fullName,
+          bookTitle: borrowingRequest.copy.book.title,
+        };
       });
+
+      await notifyMember(
+        result.memberId,
+        "Book issued — RS Hostel Library",
+        `Hello ${result.memberName},
+
+The following book has been issued to you:
+
+Book: ${result.bookTitle}
+Issue date: ${result.issuedAt.toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })} (21-day loan period)
+Due date: ${result.dueAt.toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })}
+
+Please return the book on or before the due date.
+
+RS Hostel Library`
+      );
 
       return NextResponse.json({
         message: "Book issued successfully.",
@@ -294,10 +406,22 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const loan = await prisma.loan.findUnique({
+        where: { id: body.loanId },
+        select: {
+          memberId: true,
+          member: { select: { fullName: true } },
+          copy: {
+            select: { book: { select: { title: true } } },
+          },
+        },
+      });
+
       const result = await prisma.loan.updateMany({
         where: { id: body.loanId, returnedAt: null },
         data: { returnedAt: new Date(), returnedById: librarian.id },
       });
+
       if (result.count !== 1) {
         return NextResponse.json(
           {
@@ -307,6 +431,23 @@ export async function POST(request: NextRequest) {
           { status: 409 }
         );
       }
+
+      if (loan) {
+        await notifyMember(
+          loan.memberId,
+          "Book return recorded — RS Hostel Library",
+          `Hello ${loan.member.fullName},
+
+The return of the following book has been recorded successfully:
+
+Book: ${loan.copy.book.title}
+
+Thank you for returning the book.
+
+RS Hostel Library`
+        );
+      }
+
       return NextResponse.json({
         message: "Book return recorded successfully.",
       });
@@ -343,6 +484,7 @@ export async function POST(request: NextRequest) {
         REQUEST_ALREADY_PROCESSED:
           "This request has already been processed.",
       };
+
       if (messages[error.message]) {
         return NextResponse.json(
           { error: messages[error.message] },

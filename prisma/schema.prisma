@@ -214,11 +214,12 @@ model Loan {
   returnedAt   DateTime?
   returnedById String?   @db.Uuid
 
-  copy       BookCopy      @relation(fields: [copyId], references: [id], onDelete: Restrict)
-  member     User          @relation("LoanMember", fields: [memberId], references: [id], onDelete: Restrict)
-  request    BorrowRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
-  issuedBy   User          @relation("LoanIssuer", fields: [issuedById], references: [id], onDelete: Restrict)
-  returnedBy User?         @relation("LoanReturner", fields: [returnedById], references: [id], onDelete: SetNull)
+  copy               BookCopy            @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  member             User                @relation("LoanMember", fields: [memberId], references: [id], onDelete: Restrict)
+  request            BorrowRequest       @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  issuedBy           User                @relation("LoanIssuer", fields: [issuedById], references: [id], onDelete: Restrict)
+  returnedBy         User?               @relation("LoanReturner", fields: [returnedById], references: [id], onDelete: SetNull)
+  emailNotifications EmailNotification[]
 
   @@index([memberId, issuedAt])
   @@index([copyId, returnedAt])
@@ -244,6 +245,7 @@ model Review {
 model EmailNotification {
   id             String                  @id @default(uuid()) @db.Uuid
   userId         String                  @db.Uuid
+  loanId         String?                 @db.Uuid
   type           EmailNotificationType
   recipientEmail String
   subject        String
@@ -255,8 +257,10 @@ model EmailNotification {
   lastError   String?
   createdAt   DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  loan Loan? @relation(fields: [loanId], references: [id], onDelete: Cascade)
 
+  @@unique([loanId, type])
   @@index([status, scheduledAt])
   @@index([userId, createdAt])
 }

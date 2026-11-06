@@ -4,6 +4,7 @@ import { readJsonBody } from "@/lib/request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireBorrower } from "@/lib/auth";
+import { sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -234,6 +235,44 @@ export async function POST(request: NextRequest) {
         isolationLevel: "Serializable",
       }
     );
+
+        // Notify the librarian after the borrowing request is committed.
+    try {
+      const [member, librarianEmail] = await Promise.all([
+        prisma.user.findUnique({
+          where: { id: borrower.id },
+          select: { fullName: true, roomNumber: true, email: true },
+        }),
+        Promise.resolve(process.env.LIBRARIAN_EMAIL),
+      ]);
+
+      if (member && librarianEmail && process.env.APP_URL) {
+        const dashboardUrl = new URL(
+          "/librarian/requests",
+          process.env.APP_URL
+        );
+
+        await sendEmail({
+          to: librarianEmail,
+          subject: "New book borrowing request — RS Hostel Library",
+          text: `A new borrowing request has been submitted.
+
+Member: ${member.fullName}
+Room: ${member.roomNumber}
+Email: ${member.email}
+Book: ${result.bookTitle}
+
+Review this request in the librarian dashboard:
+${dashboardUrl.toString()}
+
+RS Hostel Library`,
+        });
+      } else {
+        console.error("Librarian notification skipped: missing configuration or member.");
+      }
+    } catch (emailError) {
+      console.error("Borrow request notification failed:", emailError);
+    }
 
     return NextResponse.json(
       {

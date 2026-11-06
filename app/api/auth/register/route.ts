@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { randomBytes, createHash } from "node:crypto";
 import argon2 from "argon2";
 import { prisma } from "@/lib/prisma";
+import { sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 
@@ -65,18 +66,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // Until real email delivery is implemented, registration is
-    // permitted only in local development.
-    if (process.env.NODE_ENV !== "development") {
-      return NextResponse.json(
-        {
-          error:
-            "Registration is temporarily unavailable. Please contact the librarian.",
-        },
-        { status: 503 }
-      );
-    }
-
     const existingUser = await prisma.user.findUnique({
       where: { email },
       select: { id: true },
@@ -125,11 +114,50 @@ export async function POST(request: Request) {
       });
     });
 
-    const baseUrl = process.env.APP_URL ?? "http://localhost:3000";
+ const baseUrl = process.env.APP_URL;
 
-    console.info(
-      `[DEV EMAIL] Verification link: ${baseUrl}/verify-email?token=${token}`
-    );
+if (!baseUrl) {
+  throw new Error("APP_URL is not configured.");
+}
+
+const verificationUrl = new URL("/verify-email", baseUrl);
+verificationUrl.searchParams.set("token", token);
+
+try {
+  await sendEmail({
+    to: email,
+    subject: "Verify your RS Hostel Library account",
+    text: `Hello ${fullName},
+
+Thank you for registering with RS Hostel Library.
+
+Please verify your email address using this link:
+
+${verificationUrl.toString()}
+
+This link expires in 24 hours.
+
+After verification, your account will wait for librarian approval.
+
+RS Hostel Library`,
+  });
+} catch (emailError) {
+  await prisma.$transaction([
+  prisma.emailVerificationToken.deleteMany({
+    where: { tokenHash },
+  }),
+  prisma.user.deleteMany({ where: { email } }),
+]);
+
+  console.error("Registration email delivery failed:", emailError);
+
+  return NextResponse.json(
+    {
+      error: "Unable to send verification email. Please try again later.",
+    },
+    { status: 503 }
+  );
+}
 
     return NextResponse.json(
       {
