@@ -335,13 +335,14 @@ export async function POST(request: NextRequest) {
       }
 
       const filename = `${randomUUID()}.webp`;
-      const uploadDirectory = path.join(
-        process.cwd(),
-        "public",
-        "uploads",
-        "book-covers"
-      );
-
+const uploadDirectory =
+  process.env.COVER_UPLOAD_DIR ||
+  path.join(
+    process.cwd(),
+    "public",
+    "uploads",
+    "book-covers"
+  );
       await mkdir(uploadDirectory, { recursive: true });
 
       savedCoverPath = path.join(uploadDirectory, filename);
