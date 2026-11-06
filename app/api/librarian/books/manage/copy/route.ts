@@ -1,3 +1,5 @@
+import { verifySameOrigin } from "@/lib/csrf";
+import { readJsonBody } from "@/lib/request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireLibrarian } from "@/lib/auth";
@@ -15,6 +17,9 @@ type CopyCondition = (typeof conditions)[number];
 type CopyStatus = (typeof statuses)[number];
 
 export async function PATCH(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
     const librarian = await requireLibrarian();
     if (!librarian) {
@@ -24,15 +29,9 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { message: "Invalid request body." },
-        { status: 400 }
-      );
-    }
+    const bodyResult = await readJsonBody(request, 32768);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body: unknown = bodyResult.data;
 
     if (!isRecord(body)) {
       return NextResponse.json({ message: "Invalid request." }, { status: 400 });

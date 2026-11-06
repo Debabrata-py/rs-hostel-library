@@ -1,7 +1,9 @@
+import { verifySameOrigin } from "@/lib/csrf";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser, requireBorrower } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { readJsonBody } from "@/lib/request-body";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +15,7 @@ function isValidBookId(value: unknown): value is string {
 }
 
 async function readJson(request: NextRequest) {
-  try {
-    return await request.json();
-  } catch {
-    return null;
-  }
+  return readJsonBody(request, 16 * 1024);
 }
 
 /**
@@ -146,6 +144,9 @@ export async function GET(request: NextRequest) {
  * Creates or updates the authenticated borrower's review.
  */
 export async function POST(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
     const user = await requireBorrower();
 
@@ -156,18 +157,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await readJson(request);
+    const bodyResult = await readJson(request);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.data;
 
-    if (!body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
       return NextResponse.json(
         { error: "Invalid request body." },
         { status: 400 }
       );
     }
 
-    const { bookId, rating } = body;
+    const record = body as Record<string, unknown>;
+    const { bookId, rating } = record;
     const comment =
-      typeof body.comment === "string" ? body.comment.trim() : "";
+      typeof record.comment === "string" ? record.comment.trim() : "";
 
     if (!isValidBookId(bookId)) {
       return NextResponse.json(
@@ -273,6 +277,9 @@ export async function POST(request: NextRequest) {
  * Deletes only the authenticated user's own review.
  */
 export async function DELETE(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
     const user = await requireBorrower();
 
@@ -283,9 +290,16 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const body = await readJson(request);
+    const bodyResult = await readJson(request);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.data;
 
-    if (!body || !isValidBookId(body.bookId)) {
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      !isValidBookId((body as Record<string, unknown>).bookId)
+    ) {
       return NextResponse.json(
         { error: "A valid book ID is required." },
         { status: 400 }
@@ -294,7 +308,7 @@ export async function DELETE(request: NextRequest) {
 
     const result = await prisma.review.deleteMany({
       where: {
-        bookId: body.bookId,
+        bookId: (body as Record<string, unknown>).bookId as string,
         memberId: user.id,
       },
     });

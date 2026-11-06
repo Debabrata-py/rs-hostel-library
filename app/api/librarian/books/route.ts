@@ -1,14 +1,18 @@
+import { verifySameOrigin } from "@/lib/csrf";
+import { readFormDataBody } from "@/lib/request-body";
 
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { prisma } from "@/lib/prisma";
 import { requireLibrarian } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
 const MAX_COVER_SIZE = 5 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 40_000_000;
 
 const categoryMap = {
   Fiction: "FICTION",
@@ -47,6 +51,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function readOptionalText(
+  value: unknown,
+  maxLength: number,
+): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length > maxLength) return undefined;
+  return trimmed || null;
+}
+
 function hasValidImageSignature(
   buffer: Buffer,
   mimeType: string
@@ -81,6 +96,9 @@ function hasValidImageSignature(
 }
 
 export async function POST(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   let savedCoverPath: string | null = null;
 
   try {
@@ -93,7 +111,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const formData = await request.formData();
+    const formDataResult = await readFormDataBody(request, 6 * 1024 * 1024);
+    if (!formDataResult.ok) return formDataResult.response;
+    const formData = formDataResult.data;
     const rawBook = formData.get("book");
 
     if (typeof rawBook !== "string") {
@@ -135,10 +155,29 @@ export async function POST(request: NextRequest) {
 
     if (
       typeof input.category !== "string" ||
-      !(input.category in categoryMap)
+      !Object.prototype.hasOwnProperty.call(categoryMap, input.category)
     ) {
       return NextResponse.json(
         { message: "Choose Fiction, Non-fiction, or Magazine." },
+        { status: 400 }
+      );
+    }
+
+    const isbn = readOptionalText(input.isbn, 30);
+    const publisher = readOptionalText(input.publisher, 300);
+    const edition = readOptionalText(input.edition, 100);
+    const language = readOptionalText(input.language, 100);
+    const description = readOptionalText(input.description, 10000);
+
+    if (
+      isbn === undefined ||
+      publisher === undefined ||
+      edition === undefined ||
+      language === undefined ||
+      description === undefined
+    ) {
+      return NextResponse.json(
+        { message: "Check the optional book details. One or more fields are invalid or too long." },
         { status: 400 }
       );
     }
@@ -152,12 +191,12 @@ export async function POST(request: NextRequest) {
 
     const accessionNumbers = new Set<string>();
 
-const copies: {
-  accessionNumber: string;
-  shelfLocation: string;
-  condition: "GOOD" | "WORN" | "DAMAGED" | "UNDER_REPAIR";
-  status: "AVAILABLE";
-}[] = [];
+    const copies: {
+      accessionNumber: string;
+      shelfLocation: string;
+      condition: "GOOD" | "WORN" | "DAMAGED" | "UNDER_REPAIR";
+      status: "AVAILABLE";
+    }[] = [];
 
     for (const copy of input.copies) {
       if (!isRecord(copy)) {
@@ -183,7 +222,7 @@ const copies: {
         accessionNumber.length > 100 ||
         !shelf ||
         shelf.length > 200 ||
-        !(condition in conditionMap)
+        !Object.prototype.hasOwnProperty.call(conditionMap, condition)
       ) {
         return NextResponse.json(
           { message: "Check the accession number, shelf, and condition of every copy." },
@@ -212,18 +251,16 @@ const copies: {
 
     if (
       year !== null &&
-      (!Number.isInteger(year) || year < 1 || year > 9999)
+      (typeof year !== "number" ||
+        !Number.isInteger(year) ||
+        year < 1 ||
+        year > 9999)
     ) {
       return NextResponse.json(
         { message: "Enter a valid publication year." },
         { status: 400 }
       );
     }
-
-    const isbn =
-      typeof input.isbn === "string" && input.isbn.trim()
-        ? input.isbn.trim()
-        : null;
 
     const cover = formData.get("cover");
     let coverImagePath: string | null = null;
@@ -245,14 +282,59 @@ const copies: {
         );
       }
 
-      const extension =
-        cover.type === "image/jpeg"
-          ? "jpg"
-          : cover.type === "image/png"
-            ? "png"
-            : "webp";
+      let normalizedBuffer: Buffer;
 
-      const filename = `${randomUUID()}.${extension}`;
+      try {
+        const metadata = await sharp(buffer, {
+          limitInputPixels: MAX_IMAGE_PIXELS,
+          animated: true,
+        }).metadata();
+
+        const expectedFormat = {
+          "image/jpeg": "jpeg",
+          "image/png": "png",
+          "image/webp": "webp",
+        }[cover.type];
+
+        if (
+          !expectedFormat ||
+          metadata.format !== expectedFormat ||
+          !metadata.width ||
+          !metadata.height ||
+          metadata.width > 10000 ||
+          metadata.height > 10000 ||
+          metadata.width * metadata.height > MAX_IMAGE_PIXELS ||
+          (metadata.pages ?? 1) > 1
+        ) {
+          return NextResponse.json(
+            { message: "Invalid, oversized, or animated cover image." },
+            { status: 400 }
+          );
+        }
+
+        normalizedBuffer = await sharp(buffer, {
+          limitInputPixels: MAX_IMAGE_PIXELS,
+        })
+          .rotate()
+          .resize({
+            width: 1200,
+            height: 1600,
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .webp({
+            quality: 82,
+            effort: 4,
+          })
+          .toBuffer();
+      } catch {
+        return NextResponse.json(
+          { message: "The uploaded file is not a valid image." },
+          { status: 400 }
+        );
+      }
+
+      const filename = `${randomUUID()}.webp`;
       const uploadDirectory = path.join(
         process.cwd(),
         "public",
@@ -263,7 +345,7 @@ const copies: {
       await mkdir(uploadDirectory, { recursive: true });
 
       savedCoverPath = path.join(uploadDirectory, filename);
-      await writeFile(savedCoverPath, buffer);
+      await writeFile(savedCoverPath, normalizedBuffer);
 
       coverImagePath = `/uploads/book-covers/${filename}`;
     }
@@ -274,12 +356,12 @@ const copies: {
           title,
           author,
           isbn,
-          publisher: input.publisher?.trim() || null,
+          publisher,
           publicationYear: year,
-          edition: input.edition?.trim() || null,
+          edition,
           category: categoryMap[input.category],
-          language: input.language?.trim() || null,
-          description: input.description?.trim() || null,
+          language,
+          description,
           coverImagePath,
           copies: {
             create: copies,
@@ -307,10 +389,7 @@ const copies: {
       await unlink(savedCoverPath).catch(() => undefined);
     }
 
-    if (
-      isRecord(error) &&
-      error.code === "P2002"
-    ) {
+    if (isRecord(error) && error.code === "P2002") {
       return NextResponse.json(
         { message: "This ISBN or accession number is already registered." },
         { status: 409 }

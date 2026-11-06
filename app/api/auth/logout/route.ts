@@ -1,3 +1,4 @@
+import { verifySameOrigin } from "@/lib/csrf";
 
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
@@ -6,6 +7,9 @@ import { prisma } from "@/lib/prisma";
 const SESSION_COOKIE = "rs_library_session";
 
 export async function POST(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
     const token = request.cookies.get(SESSION_COOKIE)?.value;
 

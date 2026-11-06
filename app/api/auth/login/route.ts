@@ -1,15 +1,30 @@
-
+import { verifySameOrigin } from "@/lib/csrf";
+import { readJsonBody } from "@/lib/request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { randomBytes, createHash } from "node:crypto";
 import argon2 from "argon2";
 import { prisma } from "@/lib/prisma";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 const SESSION_COOKIE = "rs_library_session";
 const SESSION_DURATION_DAYS = 7;
 
 export async function POST(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
-    const body = await request.json();
+    const ipRateLimitResponse = await enforceRateLimit(request, {
+      scope: "auth-login",
+      limit: 10,
+      windowMs: 15 * 60 * 1000,
+    });
+
+    if (ipRateLimitResponse) return ipRateLimitResponse;
+
+    const bodyResult = await readJsonBody(request, 16384);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.data;
 
     const email =
       typeof body.email === "string"
@@ -19,9 +34,25 @@ export async function POST(request: NextRequest) {
     const password =
       typeof body.password === "string" ? body.password : "";
 
-    if (!email || !password) {
+    if (email) {
+      const emailRateLimitResponse = await enforceRateLimit(request, {
+        scope: "auth-login-email",
+        limit: 8,
+        windowMs: 15 * 60 * 1000,
+        identity: email,
+      });
+
+      if (emailRateLimitResponse) return emailRateLimitResponse;
+    }
+
+    if (
+      !email ||
+      email.length > 254 ||
+      !password ||
+      Buffer.byteLength(password, "utf8") > 1024
+    ) {
       return NextResponse.json(
-        { message: "Please enter your email and password." },
+        { message: "Please enter a valid email and password." },
         { status: 400 }
       );
     }

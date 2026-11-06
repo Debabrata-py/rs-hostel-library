@@ -1,3 +1,6 @@
+import { verifySameOrigin } from "@/lib/csrf";
+import { readJsonBody } from "@/lib/request-body";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 import { NextResponse } from "next/server";
 import { randomBytes, createHash } from "node:crypto";
@@ -11,8 +14,19 @@ function hashToken(token: string) {
 }
 
 export async function POST(request: Request) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
-    const body: unknown = await request.json();
+    const rateLimitResponse = await enforceRateLimit(request, {
+      scope: "auth-register",
+      limit: 5,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (rateLimitResponse) return rateLimitResponse;
+    const bodyResult = await readJsonBody(request, 16384);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body: unknown = bodyResult.data;
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return NextResponse.json(

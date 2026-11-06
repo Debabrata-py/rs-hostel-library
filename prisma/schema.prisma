@@ -274,3 +274,13 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
 }
+
+// Stores hashed, expiring rate-limit buckets.
+model RateLimitBucket {
+  key             String   @id @db.VarChar(64)
+  count           Int      @default(0)
+  windowStartedAt DateTime
+  expiresAt       DateTime
+
+  @@index([expiresAt])
+}

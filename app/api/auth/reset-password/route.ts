@@ -1,3 +1,6 @@
+import { verifySameOrigin } from "@/lib/csrf";
+import { readJsonBody } from "@/lib/request-body";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
@@ -5,8 +8,19 @@ import argon2 from "argon2";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
-    const body = await request.json();
+    const rateLimitResponse = await enforceRateLimit(request, {
+      scope: "auth-reset-password",
+      limit: 10,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (rateLimitResponse) return rateLimitResponse;
+    const bodyResult = await readJsonBody(request, 16384);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.data;
 
     const token = typeof body.token === "string" ? body.token : "";
     const password = typeof body.password === "string" ? body.password : "";

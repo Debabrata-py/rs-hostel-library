@@ -1,3 +1,5 @@
+import { verifySameOrigin } from "@/lib/csrf";
+import { readJsonBody } from "@/lib/request-body";
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -109,6 +111,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const csrfResponse = verifySameOrigin(request);
+  if (csrfResponse) return csrfResponse;
+
   try {
     const borrower = await requireBorrower();
 
@@ -119,16 +124,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let body: unknown;
-
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: "Invalid request body." },
-        { status: 400 }
-      );
-    }
+    const bodyResult = await readJsonBody(request, 16384);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body: unknown = bodyResult.data;
 
     if (
       typeof body !== "object" ||
