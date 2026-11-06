@@ -600,6 +600,12 @@ export default function ManageBooksPage() {
   >
     Add book
   </Link>
+  <Link
+    href="/librarian/books/import"
+    className="rounded-full border border-stone-300 px-4 py-2 text-stone-700 hover:bg-stone-100"
+  >
+    Import books (CSV / Excel)
+  </Link>
 </nav>
 
         <header className="mb-8 mt-6">
