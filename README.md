@@ -35,9 +35,9 @@ The system is designed to provide:
 | Password hashing | Argon2id |
 | Package manager | npm |
 
-**Deployment objective:** The final application will run on the institute's own server, using self-hosted PostgreSQL and local file storage. It must not depend on Supabase or paid hosting platforms.
+**Deployment objective:** The final application will run on the institute's own server, using self-hosted PostgreSQL and locally managed file storage. The application must not depend on Supabase or paid hosting platforms.
 
-Supabase packages and legacy integration files are still present in the development codebase and are scheduled for removal during production preparation.
+**Current architecture:** The application uses PostgreSQL through Prisma and the Prisma PostgreSQL adapter. Book-cover uploads are handled by the application's own API and image-processing pipeline; the Supabase client and SDK have been removed. The development copy stores uploaded covers under `public/uploads/book-covers`. Before production deployment, this storage location must be moved to a persistent, separately backed-up directory outside the application release directory.
 
 ## 3. Project structure
 
@@ -61,7 +61,8 @@ rs-hostel-library/
 ├── lib/
 │   ├── auth.ts
 │   ├── prisma.ts
-│   └── supabase.ts
+│   ├── csrf.ts
+│   └── request-body.ts
 ├── prisma/
 │   ├── migrations/
 │   └── schema.prisma
@@ -200,16 +201,17 @@ Additional Prisma commands are available through `npx prisma`.
 The application includes:
 
 - Member registration.
-- Email verification tokens.
+- Email verification tokens with expiry and single-use validation.
 - Librarian approval and rejection.
 - Active and suspended member states.
 - Argon2id password hashing.
 - Database-backed login sessions.
 - Logout and session revocation.
-- Password reset tokens with expiry.
+- Password reset tokens with expiry and single-use validation.
 - Session revocation following password reset.
+- Rate limits for authentication and account-recovery endpoints.
 
-Email verification and password-reset links currently use development logging. Actual SMTP delivery still needs to be configured.
+Email verification and password-reset links currently use development logging. Actual SMTP delivery still needs to be configured; production email-dependent flows must not be treated as operational until that is in place.
 
 ## 10. Librarian functionality
 
@@ -225,7 +227,13 @@ Librarians can manage:
 
 Librarians can also borrow books themselves, subject to the circulation rules.
 
-## 11. Git and GitHub workflow
+## 11. Reviews, uploads and application protections
+
+The application supports member book reviews, including ratings and review eligibility checks. Book-cover uploads are validated and decoded before processing; accepted images are normalized to WebP and resized before being saved.
+
+The API also applies request-size limits, same-origin checks on state-changing routes, and role-based authorization. Authentication-related endpoints use database-backed rate limiting. These controls reduce risk but do not constitute a guarantee that the application is secure; the production environment still requires a separate configuration and security review.
+
+## 12. Git and GitHub workflow
 
 The source code is maintained in a private GitHub repository:
 
@@ -249,7 +257,7 @@ git push
 
 Only stage reviewed project files. Never commit secrets, database dumps, private member information or uploaded user data.
 
-## 12. Source-code backup
+## 13. Source-code backup
 
 Create a Git bundle containing the committed repository history:
 
@@ -267,7 +275,7 @@ git bundle verify ~/rs-hostel-library-backups/rs-library-backup-YYYYMMDD.bundle
 
 Keep independent copies on external storage. A Git bundle does not contain the PostgreSQL database, environment variables or uploaded files.
 
-## 13. Database backup and recovery
+## 14. Database backup and recovery
 
 PostgreSQL backups must be maintained separately from Git.
 
@@ -287,7 +295,7 @@ Use the appropriate database credentials and verify restoration before relying o
 
 Uploaded files must also be backed up separately once local file storage is implemented.
 
-## 14. Production deployment plan
+## 15. Production deployment plan
 
 The final deployment target is the institute's existing RS Mess server.
 
@@ -295,7 +303,7 @@ Planned production architecture:
 
 - Next.js application.
 - Self-hosted PostgreSQL database.
-- Local file storage.
+- Persistent local file storage outside the application release directory, with separate file backups.
 - Nginx or the existing institute web-server configuration.
 - HTTPS.
 - systemd service management.
@@ -306,7 +314,7 @@ The library application must be integrated without disrupting the existing RS Me
 
 Institute-server configuration and migration will begin only after the necessary administrative access is available.
 
-## 15. Current development status
+## 16. Current development status
 
 The following components have been implemented or tested:
 
@@ -321,15 +329,24 @@ The following components have been implemented or tested:
 - PostgreSQL database and Prisma migrations.
 - Git version control and private GitHub backup.
 
+Completed during the current development and hardening work:
+
+- Password recovery implementation and token handling.
+- Book reviews and book-cover upload verification.
+- Authentication rate limiting and request-body size limits.
+- Same-origin protection on state-changing API routes.
+- Database backup and a test restoration, with table counts checked against the source database.
+- Removal of the Supabase SDK and legacy client from the active codebase.
+- TypeScript check and production build after Supabase removal.
+
 Remaining work includes:
 
-- Password recovery testing.
-- Book review and file-upload verification.
-- Actual email delivery.
-- Automatic due-date and overdue reminders.
-- Security and reliability audit.
-- Removal of remaining Supabase dependencies.
-- Production preparation and institute-server migration.
+- Configure and test actual SMTP email delivery.
+- Implement automatic due-date and overdue reminders, including a scheduled job.
+- Complete the remaining security and reliability review.
+- Finalize production configuration, including persistent upload storage, production environment variables, database-role separation, logging, and deployment/rollback procedures.
+- Prepare and perform migration to the institute server after administrative access is granted.
+- Verify the live deployment and complete handover documentation.
 
 ---
 
@@ -338,3 +355,5 @@ Remaining work includes:
 **Primary branch:** `main`
 **Development environment:** Ubuntu Linux
 **Production target:** Institute server (`rsmess.isical.ac.in`)
+
+**README last updated:** 6 November 2026
